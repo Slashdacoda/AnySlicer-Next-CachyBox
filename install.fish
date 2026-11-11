@@ -16,6 +16,29 @@ if test (id -u) -eq 0
     exit 1
 end
 
+# --- Logging: mirror all output into install.log next to this script ---
+# The script re-runs itself inside `script` (util-linux) so the installer keeps
+# a real terminal (prompts, sudo, distrobox enter behave as before), while
+# everything shown on screen is also recorded. Falls back to tee.
+set script_path (realpath (status filename))
+set log_file (dirname $script_path)/install.log
+if not set -q ANYSLICER_LOGGING
+    set -gx ANYSLICER_LOGGING 1
+    echo -e "📝 Logging all output to: $log_file"
+    if type -q script
+        set -l quoted (string replace -a "'" "'\\''" -- $script_path)
+        env SHELL=/bin/sh script -q -e -f -c "fish '$quoted'" $log_file
+        set rc $status
+    else
+        fish $script_path 2>&1 | tee $log_file
+        set rc $pipestatus[1]
+    end
+    # Strip color codes and carriage returns so the log is readable / shareable
+    LC_ALL=C sed -i -E 's/\x1b\][^\x07\x1b]*(\x07|\x1b\\\\)//g; s/\x1bP[^\x1b]*\x1b\\\\//g; s/\x1b\[[0-9;?<=>]*[@-~]//g; s/\x1b[=>78]//g; s/\r//g' $log_file 2>/dev/null
+    echo -e "📝 Full log saved to: $log_file"
+    exit $rc
+end
+
 # --- Pre-Check: Host Dependencies ---
 set missing_pkgs
 for pkg in distrobox podman curl
@@ -30,6 +53,19 @@ if test (count $missing_pkgs) -gt 0
     else
         echo -e "$red❌ Please install these packages first: $missing_pkgs$normal"; exit 1
     end
+end
+
+# --- System Info (for the log / bug reports) ---
+echo -e "\n$blue--- System Info ---$normal"
+echo "Date:      "(date)
+echo "Kernel:    "(uname -sr)
+echo "OS:        "(grep -m1 PRETTY_NAME /etc/os-release | cut -d= -f2 | string trim -c '"')
+echo "Session:   $XDG_SESSION_TYPE / $XDG_CURRENT_DESKTOP"
+echo "Distrobox: "(distrobox version 2>&1 | string join ' ')
+echo "Podman:    "(podman --version 2>&1)
+lspci | grep -Ei "VGA|3D" | sed 's/^/GPU:       /'
+if type -q nvidia-smi
+    echo "Nvidia:    "(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>&1 | string join '; ')
 end
 
 # --- Pre-Check: Resource Availability ---
@@ -110,7 +146,7 @@ while test "$install_success" = false
     end
 
     echo -e "\n$blue📦 Creating Distrobox container ($g_type)...$normal"
-    distrobox create --name anycubic-slicer --image ubuntu:24.04 $gpu_flags --additional-flags "$current_add_flags" --yes; or begin
+    distrobox create --name anycubic-slicer --image ubuntu:24.04 --no-entry $gpu_flags --additional-flags "$current_add_flags" --yes; or begin
         echo -e "$red❌ Container creation failed.$normal"; exit 1
     end
 
@@ -119,11 +155,15 @@ while test "$install_success" = false
         echo -e "$yellow   (Nvidia: the first start links the host driver into the container and may show no output for a while — this is not a freeze.)$normal"
     end
 
+    # Quiet apt (no progress bars) in the container, also for Anycubic's installer -> readable install.log
     distrobox enter anycubic-slicer -- bash -c "
+        echo 'quiet \"1\"; Dpkg::Progress-Fancy \"0\"; APT::Color \"0\";' | sudo tee /etc/apt/apt.conf.d/99anyslicer-quiet > /dev/null && \
         sudo apt update && \
         sudo apt install -y curl ca-certificates lsb-release locales libfuse2* sudo libgl1 libglx-mesa0 libegl1 libgl1-mesa-dri && \
         sudo locale-gen en_US.UTF-8 && \
-        curl -fsSL $installer_url -o /tmp/installer.sh && /bin/bash /tmp/installer.sh
+        curl -fsSL $installer_url -o /tmp/installer.sh && \
+        sed -i '1s/^\xEF\xBB\xBF//' /tmp/installer.sh && \
+        /bin/bash /tmp/installer.sh
     "
     if test $status -eq 0; set install_success true
     else

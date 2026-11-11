@@ -21,6 +21,28 @@ if [ "$(id -u)" -eq 0 ]; then
     exit 1
 fi
 
+# --- Logging: mirror all output into install.log next to this script ---
+# The script re-runs itself inside `script` (util-linux) so the installer keeps
+# a real terminal (prompts, sudo, distrobox enter behave as before), while
+# everything shown on screen is also recorded. Falls back to tee.
+SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
+LOG_FILE="$(dirname "$SCRIPT_PATH")/install.log"
+if [ -z "$ANYSLICER_LOGGING" ]; then
+    export ANYSLICER_LOGGING=1
+    echo -e "📝 Logging all output to: $LOG_FILE"
+    if command -v script &> /dev/null; then
+        SHELL=/bin/sh script -q -e -f -c "bash '${SCRIPT_PATH//\'/\'\\\'\'}'" "$LOG_FILE"
+        rc=$?
+    else
+        bash "$SCRIPT_PATH" 2>&1 | tee "$LOG_FILE"
+        rc=${PIPESTATUS[0]}
+    fi
+    # Strip color codes and carriage returns so the log is readable / shareable
+    LC_ALL=C sed -i -E 's/\x1b\][^\x07\x1b]*(\x07|\x1b\\)//g; s/\x1bP[^\x1b]*\x1b\\//g; s/\x1b\[[0-9;?<=>]*[@-~]//g; s/\x1b[=>78]//g; s/\r//g' "$LOG_FILE" 2>/dev/null
+    echo -e "📝 Full log saved to: $LOG_FILE"
+    exit $rc
+fi
+
 # --- Pre-Check: Host Dependencies ---
 if ! command -v distrobox &> /dev/null || ! command -v podman &> /dev/null; then
     echo -e "${YELLOW}📦 Installing host dependencies (distrobox, podman)...${NC}"
@@ -29,6 +51,19 @@ if ! command -v distrobox &> /dev/null || ! command -v podman &> /dev/null; then
     elif command -v dnf &> /dev/null; then sudo dnf install -y distrobox podman
     else echo -e "${RED}❌ Please install distrobox and podman first.${NC}"; exit 1; fi || {
         echo -e "${RED}❌ Could not install distrobox/podman.${NC}"; exit 1; }
+fi
+
+# --- System Info (for the log / bug reports) ---
+echo -e "\n${BLUE}--- System Info ---${NC}"
+echo "Date:      $(date)"
+echo "Kernel:    $(uname -sr)"
+echo "OS:        $(. /etc/os-release 2>/dev/null; echo "$PRETTY_NAME")"
+echo "Session:   ${XDG_SESSION_TYPE:-?} / ${XDG_CURRENT_DESKTOP:-?}"
+echo "Distrobox: $(distrobox version 2>&1 | tr '\n' ' ')"
+echo "Podman:    $(podman --version 2>&1)"
+lspci | grep -Ei "VGA|3D" | sed 's/^/GPU:       /'
+if command -v nvidia-smi &> /dev/null; then
+    echo "Nvidia:    $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>&1 | tr '\n' ' ')"
 fi
 
 # --- Pre-Check: Resource Availability ---
@@ -149,7 +184,7 @@ while [ "$SUCCESS" = false ]; do
     fi
 
     echo -e "${BLUE}📦 Creating Distrobox container...${NC}"
-    if ! eval "distrobox create --name anycubic-slicer --image $IMAGE_NAME $GPU_FLAG --additional-flags '$CURRENT_ADD_FLAGS' --yes"; then
+    if ! eval "distrobox create --name anycubic-slicer --image $IMAGE_NAME --no-entry $GPU_FLAG --additional-flags '$CURRENT_ADD_FLAGS' --yes"; then
         echo -e "${RED}❌ Container creation failed.${NC}"
         exit 1
     fi
@@ -160,12 +195,15 @@ while [ "$SUCCESS" = false ]; do
     fi
 
     # Package list fixed for Ubuntu 24.04 (Noble)
+    # Quiet apt (no progress bars) in the container, also for Anycubic's installer -> readable install.log
     distrobox enter anycubic-slicer -- bash -c "
+        echo 'quiet \"1\"; Dpkg::Progress-Fancy \"0\"; APT::Color \"0\";' | sudo tee /etc/apt/apt.conf.d/99anyslicer-quiet > /dev/null && \
         sudo apt update && \
         sudo apt install -y curl ca-certificates lsb-release locales libfuse2* sudo libgl1 libglx-mesa0 libegl1 libgl1-mesa-dri && \
         sudo locale-gen en_US.UTF-8 && \
         echo 'Downloading and running Anycubic installer...' && \
         curl -fsSL $SELECTED_URL -o /tmp/installer.sh && \
+        sed -i '1s/^\xEF\xBB\xBF//' /tmp/installer.sh && \
         /bin/bash /tmp/installer.sh
     "
 

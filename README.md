@@ -65,6 +65,8 @@ If Podman, Distrobox or curl are missing, the installer installs them automatica
 | `install.sh` | Universal **Bash** installer for other Linux distributions. |
 | `uninstall.fish / .sh` | Complete cleanup of containers, local images, and menu entries. |
 | `containerfile.[gpu]` | Blueprints for building locally optimized images (AMD, Nvidia, Intel). |
+| `install.log` | Created by the installer: full output of the last run (ignored by git). |
+| `uninstall.log` | Created by the uninstaller: full output of the last run (ignored by git). |
 | `docker-compose.yml` | Configuration to run the Slicer as a standalone pod via `podman-compose`. |
 
 ---
@@ -99,7 +101,8 @@ podman-compose up
 
 *   **DNS Issues:** If the installer fails with "Could not resolve host", the script will automatically retry with `--dns 1.1.1.1`.
 *   **"Running distrobox-… via SUDO/DOAS is not supported":** You started the installer with `sudo`. Run it again as your normal user (`./install.fish` or `./install.sh`).
-*   **Installer seems to hang after selecting Nvidia:** The first container start with `--nvidia` can take several minutes without output. Wait, and check that `nvidia-smi` works on the host. If it does not, fix the host driver (e.g. `nvidia-utils`, then reboot) or choose `4) Generic`. If it really hangs, please open an issue with the full terminal output and the output of `distrobox version`, `podman --version` and `nvidia-smi`.
+*   **Installer seems to hang after selecting Nvidia:** The first container start with `--nvidia` can take several minutes without output. Wait, and check that `nvidia-smi` works on the host. If it does not, fix the host driver (e.g. `nvidia-utils`, then reboot) or choose `4) Generic`. If it really hangs, please open an issue and attach your `install.log` (see below).
+*   **Install Log:** Every installer run writes its complete output (including your selections and a short system-info block with kernel, distro, session type, distrobox/podman versions and GPU/driver) to `install.log` in the repository folder. The file is overwritten on each run. Please attach it when reporting a problem. The uninstaller does the same and writes `uninstall.log`.
 *   **GUI / Graphics:** If the window does not appear, Nvidia users should ensure the `nvidia-container-toolkit` is installed on the host.
 *   **libfuse Error:** The script installs `libfuse2*` inside the container. If you encounter FUSE errors, ensure your host user has permissions to mount FUSE devices.
 *   **Broken Icons:** If the icon is missing after installation, run `update-desktop-database ~/.local/share/applications`.
