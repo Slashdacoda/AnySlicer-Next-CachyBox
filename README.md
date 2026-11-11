@@ -19,11 +19,13 @@ This project provides a reliable and high-performance way to run the **Anycubic 
 
 ## 🛠 Prerequisites
 
-Ensure your host system has the following installed:
+The installer needs the following on your host system:
 *   **Podman** (Container Engine)
 *   **Distrobox** (Container Integration Tool)
 *   **curl** (for resource checking)
-*   **Nvidia-utils** (Only if you are using an Nvidia GPU)
+*   **Nvidia-utils** (Only if you are using an Nvidia GPU — `nvidia-smi` must work on the host)
+
+If Podman, Distrobox or curl are missing, the installer installs them automatically (pacman on CachyOS/Arch; `install.sh` also supports apt and dnf).
 
 ---
 
@@ -47,7 +49,11 @@ Ensure your host system has the following installed:
         ./install.sh
         ```
 
+    > ⚠️ **Do not use `sudo`.** Run the installer as your normal user. Distrobox must run rootless; with `sudo` it refuses to run ("Running distrobox-enter via SUDO/DOAS is not supported") or creates a root-owned container. The script asks for your password itself when it needs to install host packages.
+
 3.  **Follow the Prompts:** The script will guide you through Region, GPU Driver, and Image Source selection.
+
+4.  **Be patient on first start:** Creating the container and installing the packages can take several minutes. With **Nvidia**, the first container start links the host driver into the container and may show no output for a while — this is not a freeze.
 
 ---
 
@@ -58,7 +64,7 @@ Ensure your host system has the following installed:
 | `install.fish` | Optimized interactive installer for **CachyOS** and Fish shell users. |
 | `install.sh` | Universal **Bash** installer for other Linux distributions. |
 | `uninstall.fish / .sh` | Complete cleanup of containers, local images, and menu entries. |
-| `Containerfile.[gpu]` | Blueprints for building locally optimized images (AMD, Nvidia, Intel). |
+| `containerfile.[gpu]` | Blueprints for building locally optimized images (AMD, Nvidia, Intel). |
 | `docker-compose.yml` | Configuration to run the Slicer as a standalone pod via `podman-compose`. |
 
 ---
@@ -92,6 +98,8 @@ podman-compose up
 ## 🔍 Troubleshooting
 
 *   **DNS Issues:** If the installer fails with "Could not resolve host", the script will automatically retry with `--dns 1.1.1.1`.
+*   **"Running distrobox-… via SUDO/DOAS is not supported":** You started the installer with `sudo`. Run it again as your normal user (`./install.fish` or `./install.sh`).
+*   **Installer seems to hang after selecting Nvidia:** The first container start with `--nvidia` can take several minutes without output. Wait, and check that `nvidia-smi` works on the host. If it does not, fix the host driver (e.g. `nvidia-utils`, then reboot) or choose `4) Generic`. If it really hangs, please open an issue with the full terminal output and the output of `distrobox version`, `podman --version` and `nvidia-smi`.
 *   **GUI / Graphics:** If the window does not appear, Nvidia users should ensure the `nvidia-container-toolkit` is installed on the host.
 *   **libfuse Error:** The script installs `libfuse2*` inside the container. If you encounter FUSE errors, ensure your host user has permissions to mount FUSE devices.
 *   **Broken Icons:** If the icon is missing after installation, run `update-desktop-database ~/.local/share/applications`.

@@ -11,6 +11,26 @@ echo -e "${BLUE}--------------------------------------------------------${NC}"
 echo -e "🚀 Anycubic Slicer Next Installer (Universal Bash)"
 echo -e "${BLUE}--------------------------------------------------------${NC}"
 
+# --- Pre-Check: Do not run as root ---
+# Distrobox must run rootless as the normal user; with sudo it either refuses
+# to run or creates a root-owned container whose menu entry ends up in /root.
+if [ "$(id -u)" -eq 0 ]; then
+    echo -e "${RED}❌ Do not run this installer with sudo or as root.${NC}"
+    echo -e "   Run it as your normal user:  ./install.sh"
+    echo -e "   (You will be asked for your password when root rights are needed.)"
+    exit 1
+fi
+
+# --- Pre-Check: Host Dependencies ---
+if ! command -v distrobox &> /dev/null || ! command -v podman &> /dev/null; then
+    echo -e "${YELLOW}📦 Installing host dependencies (distrobox, podman)...${NC}"
+    if command -v pacman &> /dev/null; then sudo pacman -S --needed --noconfirm distrobox podman
+    elif command -v apt &> /dev/null; then sudo apt update && sudo apt install -y distrobox podman
+    elif command -v dnf &> /dev/null; then sudo dnf install -y distrobox podman
+    else echo -e "${RED}❌ Please install distrobox and podman first.${NC}"; exit 1; fi || {
+        echo -e "${RED}❌ Could not install distrobox/podman.${NC}"; exit 1; }
+fi
+
 # --- Pre-Check: Resource Availability ---
 echo -e "${BLUE}🔍 Checking resource availability...${NC}"
 GLOBAL_URL="https://cdn-global-slicer.anycubic.com/install/AnycubicSlicerNextInstaller.sh"
@@ -75,14 +95,23 @@ gpu_choice=${gpu_choice:-$gpu_default}
 GPU_FLAG=""
 ADD_FLAGS=""
 GPU_TYPE="generic"
-CONTAINERFILE="Containerfile.amd"
+CONTAINERFILE="containerfile.amd"
 
 case $gpu_choice in
-    1) GPU_FLAG="--nvidia"; GPU_TYPE="nvidia"; CONTAINERFILE="Containerfile.nvidia" ;;
-    2) ADD_FLAGS="--device /dev/dri:/dev/dri"; GPU_TYPE="amd"; CONTAINERFILE="Containerfile.amd" ;;
-    3) ADD_FLAGS="--device /dev/dri:/dev/dri"; GPU_TYPE="intel"; CONTAINERFILE="Containerfile.intel" ;;
-    *) GPU_TYPE="generic"; CONTAINERFILE="Containerfile.amd" ;;
+    1) GPU_FLAG="--nvidia"; GPU_TYPE="nvidia"; CONTAINERFILE="containerfile.nvidia" ;;
+    2) ADD_FLAGS="--device /dev/dri:/dev/dri"; GPU_TYPE="amd"; CONTAINERFILE="containerfile.amd" ;;
+    3) ADD_FLAGS="--device /dev/dri:/dev/dri"; GPU_TYPE="intel"; CONTAINERFILE="containerfile.intel" ;;
+    *) GPU_TYPE="generic"; CONTAINERFILE="containerfile.amd" ;;
 esac
+
+# --nvidia mounts the host's Nvidia driver into the container; without a
+# working host driver this fails or hangs.
+if [ "$GPU_TYPE" = "nvidia" ] && [ "$detected_gpu" != "nvidia" ]; then
+    echo -e "${RED}⚠️  Nvidia selected, but no working Nvidia driver was found (nvidia-smi failed).${NC}"
+    echo -e "   Install/fix the host driver (e.g. nvidia-utils) and reboot, or choose 4) Generic."
+    read -p "Continue anyway? [y/N]: " nv_confirm
+    [[ "$nv_confirm" =~ ^[yY] ]] || exit 1
+fi
 
 # --- Step 3: Image Source ---
 echo -e "\n${YELLOW}--- Step 3: Image Source ---${NC}"
@@ -107,11 +136,6 @@ while [ "$SUCCESS" = false ]; do
         CURRENT_ADD_FLAGS="$CURRENT_ADD_FLAGS --dns 1.1.1.1 --dns 8.8.8.8"
     fi
 
-    # Host Dependencies
-    if command -v pacman &> /dev/null; then sudo pacman -S --needed --noconfirm distrobox podman
-    elif command -v apt &> /dev/null; then sudo apt update && sudo apt install -y distrobox podman
-    elif command -v dnf &> /dev/null; then sudo dnf install -y distrobox podman; fi
-
     # Image Preparation
     IMAGE_NAME="ubuntu:24.04"
     if [ "$img_choice" == "2" ]; then
@@ -125,9 +149,15 @@ while [ "$SUCCESS" = false ]; do
     fi
 
     echo -e "${BLUE}📦 Creating Distrobox container...${NC}"
-    eval "distrobox create --name anycubic-slicer --image $IMAGE_NAME $GPU_FLAG --additional-flags '$CURRENT_ADD_FLAGS' --yes"
+    if ! eval "distrobox create --name anycubic-slicer --image $IMAGE_NAME $GPU_FLAG --additional-flags '$CURRENT_ADD_FLAGS' --yes"; then
+        echo -e "${RED}❌ Container creation failed.${NC}"
+        exit 1
+    fi
 
-    echo -e "\n${YELLOW}⏳ Installing basic packages. This might take a few minutes...${NC}"
+    echo -e "\n${YELLOW}⏳ First container start + installing basic packages. This can take several minutes...${NC}"
+    if [ "$GPU_TYPE" = "nvidia" ]; then
+        echo -e "${YELLOW}   (Nvidia: the first start links the host driver into the container and may show no output for a while — this is not a freeze.)${NC}"
+    fi
 
     # Package list fixed for Ubuntu 24.04 (Noble)
     distrobox enter anycubic-slicer -- bash -c "

@@ -6,13 +6,39 @@ echo -e "$blue--------------------------------------------------------"
 echo -e "🚀 Anycubic Slicer Next Installer for CachyOS"
 echo -e "--------------------------------------------------------$normal"
 
+# --- Pre-Check: Do not run as root ---
+# Distrobox must run rootless as the normal user; with sudo it either refuses
+# to run or creates a root-owned container whose menu entry ends up in /root.
+if test (id -u) -eq 0
+    echo -e "$red❌ Do not run this installer with sudo or as root.$normal"
+    echo -e "   Run it as your normal user:  ./install.fish"
+    echo -e "   (You will be asked for your password when root rights are needed.)"
+    exit 1
+end
+
+# --- Pre-Check: Host Dependencies ---
+set missing_pkgs
+for pkg in distrobox podman curl
+    if not type -q $pkg; set -a missing_pkgs $pkg; end
+end
+if test (count $missing_pkgs) -gt 0
+    echo -e "$yellow📦 Missing host packages: $missing_pkgs$normal"
+    if type -q pacman
+        sudo pacman -S --needed --noconfirm $missing_pkgs; or begin
+            echo -e "$red❌ Could not install: $missing_pkgs$normal"; exit 1
+        end
+    else
+        echo -e "$red❌ Please install these packages first: $missing_pkgs$normal"; exit 1
+    end
+end
+
 # --- Pre-Check: Resource Availability ---
 echo -e "$blue🔍 Checking resource availability...$normal"
 set global_url "https://cdn-global-slicer.anycubic.com/install/AnycubicSlicerNextInstaller.sh"
 set universe_url "https://cdn-universe-slicer.anycubic.com/install/AnycubicSlicerNextInstaller.sh"
 
 set global_available false
-if curl --head --silent --fail "$global_url" > /dev/null 2>&1
+if curl --head --silent --fail --connect-timeout 5 "$global_url" > /dev/null 2>&1
     set global_available true
 end
 
@@ -57,11 +83,20 @@ set g_def "4"; switch $detected_gpu; case "nvidia"; set g_def "1"; case "amd"; s
 echo "1) Nvidia  2) AMD  3) Intel  4) Generic"
 read -P "Select Driver Stack [$g_def]: " g_choice; if test -z "$g_choice"; set g_choice "$g_def"; end
 
-set gpu_flags ""; set add_flags ""; set g_type "generic"; set c_file "Containerfile.amd"
+set gpu_flags; set add_flags ""; set g_type "generic"; set c_file "containerfile.amd"
 switch $g_choice
-    case 1; set gpu_flags "--nvidia"; set g_type "nvidia"; set c_file "Containerfile.nvidia"
-    case 2; set add_flags "--device /dev/dri:/dev/dri"; set g_type "amd"; set c_file "Containerfile.amd"
-    case 3; set add_flags "--device /dev/dri:/dev/dri"; set g_type "intel"; set c_file "Containerfile.intel"
+    case 1; set gpu_flags "--nvidia"; set g_type "nvidia"; set c_file "containerfile.nvidia"
+    case 2; set add_flags "--device /dev/dri:/dev/dri"; set g_type "amd"; set c_file "containerfile.amd"
+    case 3; set add_flags "--device /dev/dri:/dev/dri"; set g_type "intel"; set c_file "containerfile.intel"
+end
+
+# --nvidia mounts the host's Nvidia driver into the container; without a
+# working host driver this fails or hangs.
+if test "$g_type" = "nvidia"; and test "$detected_gpu" != "nvidia"
+    echo -e "$red⚠️  Nvidia selected, but no working Nvidia driver was found (nvidia-smi failed).$normal"
+    echo -e "   Install/fix the host driver (e.g. nvidia-utils) and reboot, or choose 4) Generic."
+    read -P "Continue anyway? [y/N]: " nv_confirm
+    if not string match -qi "y*" -- "$nv_confirm"; exit 1; end
 end
 
 # --- Step 3: Installation Loop with DNS Retry ---
@@ -74,8 +109,15 @@ while test "$install_success" = false
         set current_add_flags "$current_add_flags --dns 1.1.1.1 --dns 8.8.8.8"
     end
 
-    distrobox create --name anycubic-slicer --image ubuntu:24.04 $gpu_flags --additional-flags "$current_add_flags" --yes
-    echo -e "\n$yellow⏳ Installing basic packages. This might take a few minutes...$normal"
+    echo -e "\n$blue📦 Creating Distrobox container ($g_type)...$normal"
+    distrobox create --name anycubic-slicer --image ubuntu:24.04 $gpu_flags --additional-flags "$current_add_flags" --yes; or begin
+        echo -e "$red❌ Container creation failed.$normal"; exit 1
+    end
+
+    echo -e "\n$yellow⏳ First container start + installing basic packages. This can take several minutes...$normal"
+    if test "$g_type" = "nvidia"
+        echo -e "$yellow   (Nvidia: the first start links the host driver into the container and may show no output for a while — this is not a freeze.)$normal"
+    end
 
     distrobox enter anycubic-slicer -- bash -c "
         sudo apt update && \
