@@ -98,9 +98,12 @@ read -P "Selection [$v_default]: " v_choice
 if test -z "$v_choice"; set v_choice "$v_default"; end
 
 set installer_url "$universe_url"
-if test "$v_choice" = "1"
+if test "$v_choice" = "1"; and test "$global_available" = true
     set installer_url "$global_url"
     echo "Selected: Global Version"
+else if test "$v_choice" = "1"
+    echo -e "$yellow⚠️  Global Version is not reachable right now - using Universe Version instead.$normal"
+    echo "   (The Universe installer also lets you choose the Global/English version.)"
 else
     echo "Selected: Universe Version"
 end
@@ -135,6 +138,46 @@ if test "$g_type" = "nvidia"; and test "$detected_gpu" != "nvidia"
     if not string match -qi "y*" -- "$nv_confirm"; exit 1; end
 end
 
+# --- Debug mode: ANYSLICER_DEBUG=1 ./install.fish -> verbose distrobox output in install.log ---
+set dbx_verbose
+if set -q ANYSLICER_DEBUG; and test "$ANYSLICER_DEBUG" != 0
+    set dbx_verbose --verbose
+    echo -e "$yellow🐞 Debug mode: distrobox runs with --verbose$normal"
+end
+
+# Fully qualified image name: avoids podman short-name resolution
+set image "docker.io/library/ubuntu:24.04"
+
+# --- Pre-Check: Podman responds ---
+echo -e "\n$blue🔎 Checking podman...$normal"
+timeout 60 podman info > /dev/null 2>&1
+switch $status
+    case 0
+        echo -e "$green   podman OK$normal"
+    case 124
+        echo -e "$red❌ podman did not respond within 60 seconds.$normal"
+        echo "   Try: 'podman info' and 'podman ps -a' in a terminal, or reboot and run the installer again."
+        exit 1
+    case '*'
+        echo -e "$red❌ podman is not working:$normal"
+        podman info 2>&1 | tail -n 5
+        exit 1
+end
+
+# --- Pre-Pull: download the base image with visible progress ---
+echo -e "\n$blue⬇️  Downloading base image $image...$normal"
+timeout 1800 podman pull $image
+switch $status
+    case 0
+        echo -e "$green   Image ready$normal"
+    case 124
+        echo -e "$red❌ Image download did not finish within 30 minutes (network / registry problem?).$normal"
+        exit 1
+    case '*'
+        echo -e "$red❌ Image download failed. Check your internet connection and run: podman pull $image$normal"
+        exit 1
+end
+
 # --- Step 3: Installation Loop with DNS Retry ---
 set use_custom_dns false; set install_success false
 while test "$install_success" = false
@@ -146,7 +189,15 @@ while test "$install_success" = false
     end
 
     echo -e "\n$blue📦 Creating Distrobox container ($g_type)...$normal"
-    distrobox create --name anycubic-slicer --image ubuntu:24.04 --no-entry $gpu_flags --additional-flags "$current_add_flags" --yes; or begin
+    # Only pass --additional-flags when there are flags: distrobox-create loops
+    # forever (100% CPU, no output) on an empty value. This was the Nvidia
+    # "freeze" from issue #1 (Nvidia/Generic had no extra flags).
+    set create_args --name anycubic-slicer --image $image --no-entry $gpu_flags --yes
+    set current_add_flags (string trim -- "$current_add_flags")
+    if test -n "$current_add_flags"
+        set -a create_args --additional-flags "$current_add_flags"
+    end
+    distrobox create $dbx_verbose $create_args; or begin
         echo -e "$red❌ Container creation failed.$normal"; exit 1
     end
 
@@ -156,7 +207,7 @@ while test "$install_success" = false
     end
 
     # Quiet apt (no progress bars) in the container, also for Anycubic's installer -> readable install.log
-    distrobox enter anycubic-slicer -- bash -c "
+    distrobox enter $dbx_verbose anycubic-slicer -- bash -c "
         echo 'quiet \"1\"; Dpkg::Progress-Fancy \"0\"; APT::Color \"0\";' | sudo tee /etc/apt/apt.conf.d/99anyslicer-quiet > /dev/null && \
         sudo apt update && \
         sudo apt install -y curl ca-certificates lsb-release locales libfuse2* sudo libgl1 libglx-mesa0 libegl1 libgl1-mesa-dri && \

@@ -93,9 +93,12 @@ read -p "Selection [$V_DEFAULT]: " v_choice
 v_choice=${v_choice:-$V_DEFAULT}
 
 SELECTED_URL="$UNIVERSE_URL"
-if [ "$v_choice" == "1" ]; then
+if [ "$v_choice" == "1" ] && [ "$GLOBAL_AVAILABLE" = true ]; then
     SELECTED_URL="$GLOBAL_URL"
     echo -e "Selection: ${BLUE}Global Version${NC}"
+elif [ "$v_choice" == "1" ]; then
+    echo -e "${YELLOW}⚠️  Global Version is not reachable right now - using Universe Version instead.${NC}"
+    echo "   (The Universe installer also lets you choose the Global/English version.)"
 else
     echo -e "Selection: ${BLUE}Universe Version${NC}"
 fi
@@ -155,6 +158,55 @@ echo "2) Custom Local Containerfile (Build locally)"
 read -p "Selection [1]: " img_choice
 img_choice=${img_choice:-1}
 
+# --- Debug mode: ANYSLICER_DEBUG=1 ./install.sh -> verbose distrobox output in install.log ---
+DBX_VERBOSE=""
+if [ -n "$ANYSLICER_DEBUG" ] && [ "$ANYSLICER_DEBUG" != "0" ]; then
+    DBX_VERBOSE="--verbose"
+    echo -e "${YELLOW}🐞 Debug mode: distrobox runs with --verbose${NC}"
+fi
+
+# --- Pre-Check: Podman responds ---
+echo -e "\n${BLUE}🔎 Checking podman...${NC}"
+timeout 60 podman info > /dev/null 2>&1
+case $? in
+    0)   echo -e "${GREEN}   podman OK${NC}" ;;
+    124) echo -e "${RED}❌ podman did not respond within 60 seconds.${NC}"
+         echo "   Try: 'podman info' and 'podman ps -a' in a terminal, or reboot and run the installer again."
+         exit 1 ;;
+    *)   echo -e "${RED}❌ podman is not working:${NC}"
+         podman info 2>&1 | tail -n 5
+         exit 1 ;;
+esac
+
+# --- Image Preparation (once, before the install loop) ---
+# Fully qualified image name: avoids podman short-name resolution
+IMAGE_NAME="docker.io/library/ubuntu:24.04"
+if [ "$img_choice" == "2" ]; then
+    CONTAINERFILE_PATH="$(dirname "$SCRIPT_PATH")/$CONTAINERFILE"
+    if [ -f "$CONTAINERFILE_PATH" ]; then
+        echo -e "${BLUE}🏗️ Building local image from $CONTAINERFILE...${NC}"
+        if podman build -t "anycubic-custom-$GPU_TYPE" -f "$CONTAINERFILE_PATH" "$(dirname "$SCRIPT_PATH")"; then
+            IMAGE_NAME="anycubic-custom-$GPU_TYPE"
+        else
+            echo -e "${RED}Warning: local build failed, using standard image.${NC}"
+        fi
+    else
+        echo -e "${RED}Warning: $CONTAINERFILE not found, using standard image.${NC}"
+    fi
+fi
+
+if [ "$IMAGE_NAME" = "docker.io/library/ubuntu:24.04" ]; then
+    echo -e "\n${BLUE}⬇️  Downloading base image $IMAGE_NAME...${NC}"
+    timeout 1800 podman pull "$IMAGE_NAME"
+    case $? in
+        0)   echo -e "${GREEN}   Image ready${NC}" ;;
+        124) echo -e "${RED}❌ Image download did not finish within 30 minutes (network / registry problem?).${NC}"
+             exit 1 ;;
+        *)   echo -e "${RED}❌ Image download failed. Check your internet connection and run: podman pull $IMAGE_NAME${NC}"
+             exit 1 ;;
+    esac
+fi
+
 # --- Step 4: Installation Loop with DNS Retry ---
 SUCCESS=false
 USE_DNS=false
@@ -171,20 +223,15 @@ while [ "$SUCCESS" = false ]; do
         CURRENT_ADD_FLAGS="$CURRENT_ADD_FLAGS --dns 1.1.1.1 --dns 8.8.8.8"
     fi
 
-    # Image Preparation
-    IMAGE_NAME="ubuntu:24.04"
-    if [ "$img_choice" == "2" ]; then
-        if [ -f "$CONTAINERFILE" ]; then
-            echo -e "${BLUE}🏗️ Building local image...${NC}"
-            podman build -t "anycubic-custom-$GPU_TYPE" -f "$CONTAINERFILE" .
-            IMAGE_NAME="anycubic-custom-$GPU_TYPE"
-        else
-            echo -e "${RED}Warning: $CONTAINERFILE not found, using standard image.${NC}"
-        fi
-    fi
-
-    echo -e "${BLUE}📦 Creating Distrobox container...${NC}"
-    if ! eval "distrobox create --name anycubic-slicer --image $IMAGE_NAME --no-entry $GPU_FLAG --additional-flags '$CURRENT_ADD_FLAGS' --yes"; then
+    echo -e "${BLUE}📦 Creating Distrobox container ($GPU_TYPE)...${NC}"
+    # Only pass --additional-flags when there are flags: distrobox-create loops
+    # forever (100% CPU, no output) on an empty value. This was the Nvidia
+    # "freeze" from issue #1 (Nvidia/Generic had no extra flags).
+    CREATE_ARGS=(--name anycubic-slicer --image "$IMAGE_NAME" --no-entry --yes)
+    [ -n "$GPU_FLAG" ] && CREATE_ARGS+=("$GPU_FLAG")
+    CURRENT_ADD_FLAGS="$(echo "$CURRENT_ADD_FLAGS" | xargs)"
+    [ -n "$CURRENT_ADD_FLAGS" ] && CREATE_ARGS+=(--additional-flags "$CURRENT_ADD_FLAGS")
+    if ! distrobox create $DBX_VERBOSE "${CREATE_ARGS[@]}"; then
         echo -e "${RED}❌ Container creation failed.${NC}"
         exit 1
     fi
@@ -196,7 +243,7 @@ while [ "$SUCCESS" = false ]; do
 
     # Package list fixed for Ubuntu 24.04 (Noble)
     # Quiet apt (no progress bars) in the container, also for Anycubic's installer -> readable install.log
-    distrobox enter anycubic-slicer -- bash -c "
+    distrobox enter $DBX_VERBOSE anycubic-slicer -- bash -c "
         echo 'quiet \"1\"; Dpkg::Progress-Fancy \"0\"; APT::Color \"0\";' | sudo tee /etc/apt/apt.conf.d/99anyslicer-quiet > /dev/null && \
         sudo apt update && \
         sudo apt install -y curl ca-certificates lsb-release locales libfuse2* sudo libgl1 libglx-mesa0 libegl1 libgl1-mesa-dri && \
