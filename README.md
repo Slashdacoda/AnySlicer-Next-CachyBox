@@ -17,6 +17,28 @@ This project provides a reliable and high-performance way to run the **Anycubic 
 
 ---
 
+## 📸 Screenshots
+
+**Anycubic Slicer Next running in the container** (CachyOS, KDE Plasma / Wayland, AMD Radeon RX 7900 XTX) with a sliced example model:
+
+<p align="center">
+  <a href="docs/slicer-sliced-model.png">
+    <img src="docs/slicer-sliced-model.png" alt="Anycubic Slicer Next showing the preview of a sliced model on an Anycubic Kobra S1 build plate" width="900">
+  </a>
+</p>
+
+<details>
+<summary><b>Example installation</b> (contents of <code>install.log</code>, click to expand)</summary>
+<br>
+<p align="center">
+  <a href="docs/install-log-example.png">
+    <img src="docs/install-log-example.png" alt="Terminal output of install.log: system info, version and GPU selection, podman check, image download and container setup" width="800">
+  </a>
+</p>
+</details>
+
+---
+
 ## 🛠 Prerequisites
 
 The installer needs the following on your host system:
@@ -68,6 +90,7 @@ If Podman, Distrobox or curl are missing, the installer installs them automatica
 | `install.log` | Created by the installer: full output of the last run (ignored by git). |
 | `uninstall.log` | Created by the uninstaller: full output of the last run (ignored by git). |
 | `docker-compose.yml` | Configuration to run the Slicer as a standalone pod via `podman-compose`. |
+| `docs/` | Screenshots used in this README. |
 
 ---
 
